@@ -19,7 +19,6 @@ vendor/
 
 # Node / Frontend (Svelte 5)
 web/node_modules/
-web/dist/
 .svelte-kit/
 
 # Environment and secrets

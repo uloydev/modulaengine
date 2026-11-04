@@ -1,10 +1,10 @@
-.PHONY: all build clean test test-race test-integration lint verify bench run help
+.PHONY: all build build-ui clean test test-race test-integration lint verify bench run help
 
 # Build configuration
 BINARY_NAME := modulaengine
 BIN_DIR := bin
 CMD_DIR := cmd/modulaengine
-GO_FILES := $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -path "./web/*")
+GO_FILES := $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -path "./web/node_modules/*")
 
 # Version and build flags
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.1.0-dev")
@@ -14,7 +14,10 @@ LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.Bui
 
 all: verify build
 
-build: ## Build single self-contained binary
+build-ui: ## Build Svelte 5 frontend assets
+	@if [ -d "web" ] && [ -f "web/package.json" ]; then cd web && npm run build; fi
+
+build: build-ui ## Build single self-contained binary with embedded Svelte 5 SPA
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/$(BINARY_NAME) ./$(CMD_DIR)
 

@@ -18,6 +18,7 @@ import (
 	"github.com/uloydev/modulaengine/internal/logger"
 	"github.com/uloydev/modulaengine/internal/query"
 	"github.com/uloydev/modulaengine/internal/queue"
+	"github.com/uloydev/modulaengine/web"
 )
 
 var (
@@ -127,7 +128,16 @@ func main() {
 	}
 
 	dataHandler := api.NewDataHandler(dataDB, registry, queryCompiler, cmdCompiler, executor, hub)
-	router := api.NewRouter(serverCfg, dataDB, dataHandler, hub)
+
+	var spaHandler http.Handler
+	if !*headless {
+		spaHandler = web.AssetHandler()
+		log.Info().Msg("embedded Svelte 5 admin SPA enabled")
+	} else {
+		log.Info().Msg("running in headless mode; embedded UI disabled")
+	}
+
+	router := api.NewRouter(serverCfg, dataDB, dataHandler, hub, spaHandler)
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", *port),

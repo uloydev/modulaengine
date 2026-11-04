@@ -14,7 +14,7 @@ type ServerConfig struct {
 	BuildTime string
 }
 
-func NewRouter(cfg ServerConfig, db TxDB, dataHandler *DataHandler, hub *SSEHub) http.Handler {
+func NewRouter(cfg ServerConfig, db TxDB, dataHandler *DataHandler, hub *SSEHub, spaHandler http.Handler) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(RequestIDAndLoggerMiddleware())
@@ -57,6 +57,11 @@ func NewRouter(cfg ServerConfig, db TxDB, dataHandler *DataHandler, hub *SSEHub)
 			})
 		}
 	})
+
+	// Embedded Svelte 5 Single Page Application
+	if spaHandler != nil {
+		r.Handle("/*", spaHandler)
+	}
 
 	return r
 }

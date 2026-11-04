@@ -53,7 +53,7 @@ func TestRouter_PublicEndpoints(t *testing.T) {
 	}
 
 	db := &mockTxDB{}
-	router := api.NewRouter(cfg, db, nil, nil)
+	router := api.NewRouter(cfg, db, nil, nil, nil)
 
 	t.Run("healthz endpoint", func(t *testing.T) {
 		t.Parallel()
@@ -95,7 +95,7 @@ func TestRouter_ProtectedCollectionNotFound(t *testing.T) {
 	db := &mockTxDB{}
 
 	handler := api.NewDataHandler(db, registry, queryCompiler, cmdCompiler, executor, hub)
-	router := api.NewRouter(cfg, db, handler, hub)
+	router := api.NewRouter(cfg, db, handler, hub, nil)
 
 	secCtx := &core.SecurityContext{
 		TenantID: 1,
