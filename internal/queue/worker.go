@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/rs/zerolog/log"
 )
 
 type DB interface {
@@ -213,7 +213,7 @@ func (p *WorkerPool) workerLoop(ctx context.Context, workerNum int) {
 					continue
 				}
 			}
-			slog.Error("error claiming job", "worker", workerNum, "err", err)
+			log.Error().Err(err).Int("worker", workerNum).Msg("error claiming job")
 			select {
 			case <-ctx.Done():
 				return
@@ -223,7 +223,11 @@ func (p *WorkerPool) workerLoop(ctx context.Context, workerNum int) {
 		}
 
 		if err := p.ExecuteJob(ctx, job); err != nil {
-			slog.Warn("job execution failed", "job_id", job.ID, "task_type", job.TaskType, "err", err)
+			log.Warn().
+				Int64("job_id", job.ID).
+				Str("task_type", job.TaskType).
+				Err(err).
+				Msg("job execution failed")
 		}
 	}
 }

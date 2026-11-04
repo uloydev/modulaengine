@@ -3,9 +3,10 @@ package queue
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 type ReaperConfig struct {
@@ -69,9 +70,9 @@ func (r *Reaper) loop(ctx context.Context) {
 		case <-ticker.C:
 			reaped, err := r.ReapOnce(ctx)
 			if err != nil {
-				slog.Error("reaper cycle failed", "err", err)
+				log.Error().Err(err).Msg("reaper cycle failed")
 			} else if reaped > 0 {
-				slog.Warn("reaped stranded jobs", "count", reaped)
+				log.Warn().Int64("count", reaped).Msg("reaped stranded jobs")
 			}
 		}
 	}
