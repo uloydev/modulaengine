@@ -1,0 +1,41 @@
+# Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts & coverage
+*.out
+*.test
+coverage.html
+profile.pprof
+
+# Dependencies and caches
+vendor/
+.cache/
+
+# Node / Frontend (Svelte 5)
+web/node_modules/
+web/dist/
+.svelte-kit/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Kilo worktrees and local runtime state
+.kilo/worktrees/
+.kilo/agent-manager.json
