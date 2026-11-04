@@ -1,0 +1,101 @@
+{
+  "name": "b2b_crm",
+  "version": "1.0.0",
+  "collections": [
+    {
+      "name": "accounts",
+      "label": "Companies",
+      "fields": [
+        { "name": "name", "type": "text", "required": true, "searchable": true },
+        { "name": "industry", "type": "enum", "options": ["TECH", "FINANCE", "HEALTHCARE", "OTHER"] },
+        { "name": "website", "type": "text" },
+        { "name": "annual_revenue", "type": "number", "precision": 14, "scale": 2 }
+      ]
+    },
+    {
+      "name": "contacts",
+      "label": "People",
+      "fields": [
+        { "name": "first_name", "type": "text", "required": true },
+        { "name": "last_name", "type": "text" },
+        { "name": "email", "type": "text", "required": true, "unique": true, "searchable": true },
+        { "name": "phone", "type": "text" },
+        { 
+          "name": "account_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "accounts", 
+          "on_delete": "SET_NULL" 
+        }
+      ]
+    },
+    {
+      "name": "deals",
+      "label": "Sales Pipeline",
+      "fields": [
+        { "name": "title", "type": "text", "required": true, "searchable": true },
+        { "name": "amount", "type": "number", "required": true, "precision": 14, "scale": 2, "default": "0" },
+        { 
+          "name": "stage", 
+          "type": "enum", 
+          "required": true, 
+          "options": ["PROSPECT", "DISCOVERY", "PROPOSAL", "NEGOTIATION", "CLOSED_WON", "CLOSED_LOST"],
+          "default": "PROSPECT"
+        },
+        { "name": "close_date", "type": "datetime" },
+        { 
+          "name": "account_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "accounts", 
+          "required": true 
+        },
+        { 
+          "name": "contact_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "contacts" 
+        }
+      ]
+    },
+    {
+      "name": "activities",
+      "label": "Deal Activities",
+      "fields": [
+        { "name": "type", "type": "enum", "options": ["CALL", "EMAIL", "MEETING", "NOTE"], "required": true },
+        { "name": "notes", "type": "text" },
+        { 
+          "name": "deal_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "deals", 
+          "on_delete": "CASCADE", 
+          "required": true 
+        }
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "name": "sales_rep",
+      "permissions": [
+        {
+          "collection": "deals",
+          "actions": ["create", "read", "update"],
+          "rls_filter": { "op": "eq", "field": "created_by", "value": "{{user.id}}" },
+          "allowed_fields": ["*"]
+        },
+        {
+          "collection": "accounts",
+          "actions": ["create", "read", "update"],
+          "allowed_fields": ["*"]
+        },
+        {
+          "collection": "contacts",
+          "actions": ["create", "read", "update"],
+          "allowed_fields": ["*"]
+        }
+      ]
+    }
+  ]
+}

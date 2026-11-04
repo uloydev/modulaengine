@@ -83,7 +83,7 @@ func (c *Compiler) CompileSelect(col *core.Collection, params *QueryParams, secC
 	wherePredicates = append(wherePredicates, fmt.Sprintf("tenant_id = $%d", tenantIDParam))
 
 	if params != nil && params.Filter != nil {
-		userFilterSQL, nextParam, err := c.compileNode(col, params.Filter, secCtx, paramIdx, &args)
+		userFilterSQL, nextParam, err := c.compileNode(col, params.Filter, secCtx, paramIdx, &args, false)
 		if err != nil {
 			return nil, fmt.Errorf("compile user filter: %w", err)
 		}
@@ -99,7 +99,7 @@ func (c *Compiler) CompileSelect(col *core.Collection, params *QueryParams, secC
 			return nil, fmt.Errorf("parse rls filter: %w", err)
 		}
 		if rlsNode != nil {
-			rlsSQL, nextParam, err := c.compileNode(col, rlsNode, secCtx, paramIdx, &args)
+			rlsSQL, nextParam, err := c.compileNode(col, rlsNode, secCtx, paramIdx, &args, true)
 			if err != nil {
 				return nil, fmt.Errorf("compile rls filter: %w", err)
 			}
@@ -201,7 +201,7 @@ func (c *Compiler) compileSort(col *core.Collection, params *QueryParams, secCtx
 	return strings.Join(clauses, ", "), nil
 }
 
-func (c *Compiler) compileNode(col *core.Collection, n Node, secCtx *core.SecurityContext, startParam int, args *[]any) (string, int, error) {
+func (c *Compiler) compileNode(col *core.Collection, n Node, secCtx *core.SecurityContext, startParam int, args *[]any, isRLS bool) (string, int, error) {
 	paramIdx := startParam
 
 	switch node := n.(type) {
@@ -209,7 +209,7 @@ func (c *Compiler) compileNode(col *core.Collection, n Node, secCtx *core.Securi
 		if !isFieldKnown(col, node.Field) {
 			return "", paramIdx, fmt.Errorf("%w: '%s'", ErrUnknownField, node.Field)
 		}
-		if !c.isFieldPermitted(node.Field, secCtx) {
+		if !isRLS && !c.isFieldPermitted(node.Field, secCtx) {
 			return "", paramIdx, fmt.Errorf("%w: '%s'", ErrFieldNotPermitted, node.Field)
 		}
 
@@ -254,7 +254,7 @@ func (c *Compiler) compileNode(col *core.Collection, n Node, secCtx *core.Securi
 		if !isFieldKnown(col, node.Field) {
 			return "", paramIdx, fmt.Errorf("%w: '%s'", ErrUnknownField, node.Field)
 		}
-		if !c.isFieldPermitted(node.Field, secCtx) {
+		if !isRLS && !c.isFieldPermitted(node.Field, secCtx) {
 			return "", paramIdx, fmt.Errorf("%w: '%s'", ErrFieldNotPermitted, node.Field)
 		}
 		if node.IsNull {
@@ -265,7 +265,7 @@ func (c *Compiler) compileNode(col *core.Collection, n Node, secCtx *core.Securi
 	case *LogicalNode:
 		parts := make([]string, 0, len(node.Children))
 		for _, child := range node.Children {
-			childSQL, nextParam, err := c.compileNode(col, child, secCtx, paramIdx, args)
+			childSQL, nextParam, err := c.compileNode(col, child, secCtx, paramIdx, args, isRLS)
 			if err != nil {
 				return "", paramIdx, err
 			}

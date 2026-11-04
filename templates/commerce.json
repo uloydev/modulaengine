@@ -1,0 +1,116 @@
+{
+  "name": "headless_commerce",
+  "version": "1.0.0",
+  "collections": [
+    {
+      "name": "categories",
+      "label": "Product Categories",
+      "fields": [
+        { "name": "name", "type": "text", "required": true },
+        { "name": "slug", "type": "text", "required": true, "unique": true, "searchable": true },
+        { 
+          "name": "parent_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "categories", 
+          "on_delete": "SET_NULL" 
+        }
+      ]
+    },
+    {
+      "name": "products",
+      "label": "Products & Catalog",
+      "fields": [
+        { "name": "title", "type": "text", "required": true, "searchable": true },
+        { "name": "slug", "type": "text", "required": true, "unique": true, "searchable": true },
+        { "name": "description", "type": "text" },
+        { "name": "price", "type": "number", "precision": 14, "scale": 2, "required": true },
+        { "name": "cost_price", "type": "number", "precision": 14, "scale": 2, "required": true },
+        { "name": "stock_quantity", "type": "number", "default": "0", "required": true },
+        { "name": "is_published", "type": "boolean", "default": "false" },
+        { "name": "images", "type": "json" },
+        { 
+          "name": "category_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "categories" 
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "label": "Customer Orders",
+      "fields": [
+        { "name": "order_number", "type": "text", "required": true, "unique": true, "searchable": true },
+        { "name": "customer_email", "type": "text", "required": true, "searchable": true },
+        { "name": "total_amount", "type": "number", "precision": 14, "scale": 2, "required": true },
+        { 
+          "name": "payment_status", 
+          "type": "enum", 
+          "options": ["PENDING", "PAID", "FAILED", "REFUNDED"], 
+          "default": "PENDING",
+          "required": true
+        },
+        { 
+          "name": "fulfillment_status", 
+          "type": "enum", 
+          "options": ["UNFULFILLED", "PARTIALLY_FULFILLED", "FULFILLED", "CANCELLED"], 
+          "default": "UNFULFILLED",
+          "required": true
+        },
+        { "name": "shipping_address", "type": "json", "required": true }
+      ]
+    },
+    {
+      "name": "order_items",
+      "label": "Order Line Items",
+      "fields": [
+        { "name": "quantity", "type": "number", "required": true, "default": "1" },
+        { "name": "unit_price", "type": "number", "precision": 14, "scale": 2, "required": true },
+        { 
+          "name": "order_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "orders", 
+          "on_delete": "CASCADE", 
+          "required": true 
+        },
+        { 
+          "name": "product_id", 
+          "type": "relation", 
+          "relation_type": "M2O", 
+          "target_collection": "products", 
+          "required": true 
+        }
+      ]
+    }
+  ],
+  "roles": [
+    {
+      "name": "public_storefront",
+      "permissions": [
+        {
+          "collection": "products",
+          "actions": ["read"],
+          "rls_filter": { "op": "eq", "field": "is_published", "value": true },
+          "allowed_fields": ["title", "slug", "description", "price", "stock_quantity", "images", "category_id"]
+        },
+        {
+          "collection": "categories",
+          "actions": ["read"],
+          "allowed_fields": ["name", "slug", "parent_id"]
+        },
+        {
+          "collection": "orders",
+          "actions": ["create"],
+          "allowed_fields": ["customer_email", "shipping_address"]
+        },
+        {
+          "collection": "order_items",
+          "actions": ["create"],
+          "allowed_fields": ["product_id", "quantity"]
+        }
+      ]
+    }
+  ]
+}
