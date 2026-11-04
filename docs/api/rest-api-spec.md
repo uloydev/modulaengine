@@ -23,6 +23,9 @@ Every active collection automatically exposes uniform RESTful endpoints.
 - **Field Projection (FLS)**: `fields=<field1>,<field2>`
   - Example: `?fields=order_number,total_amount,status`
 - **Relation Expansion (Dataloader)**: `expand=<relation1>,<relation2>`
+  - Resolves relational foreign keys in a single batched SQL roundtrip per relation (`WHERE id = ANY($1)`).
+  - Eliminates N+1 query patterns across paginated records.
+  - Automatically adheres to tenant boundaries and Field-Level Security projection masks.
   - Example: `?expand=customer,items`
 
 #### Response Envelope (HTTP 200 OK)
@@ -136,12 +139,87 @@ data: {"id":"018e32c8-8869-7c91-b3fa-e866184a1d52","action":"UPDATE","changes":{
 
 ## 3. Standard Error Envelope (RFC 7807)
 
+All non-2xx responses adhere to the RFC 7807 Problem Details specification:
+
 ```json
 {
-  "type": "https://modulaengine.dev/errors/concurrency-conflict",
+  "type": "https://modulaengine.dev/errors",
   "title": "Optimistic Concurrency Conflict",
   "status": 409,
-  "detail": "Record version 1 has been superseded. Current version is 2.",
+  "detail": "optimistic concurrency conflict: expected 1, got 2",
   "instance": "/api/data/orders/018e32c8-8869-7c91-b3fa-e866184a1d52"
+}
+```
+
+### Domain Error Mappings
+
+| Domain Sentinel Error | HTTP Status Code | Problem Title |
+|---|---|---|
+| `core.ErrNotFound` | **404 Not Found** | Record Not Found |
+| `core.ErrVersionConflict` | **409 Conflict** | Optimistic Concurrency Conflict |
+| `query.ErrFieldNotPermitted` | **403 Forbidden** | Field Access Forbidden |
+| `core.ErrTenantMismatch` | **401 Unauthorized** | Tenant Authorization Failure |
+| `core.ErrValidation` | **400 Bad Request** | Validation Error |
+| `query.ErrUnknownField` | **400 Bad Request** | Validation Error |
+| `query.ErrDepthExceeded` | **400 Bad Request** | Validation Error |
+| `query.ErrArraySizeExceeded` | **400 Bad Request** | Validation Error |
+| Other unhandled errors | **500 Internal Server Error** | Internal Server Error |
+
+---
+
+## 4. System Health Probes & Runtime Metadata
+
+Public endpoints exposed without authentication for container orchestrators and monitoring agents:
+
+### 4.1 Liveness Probe
+`GET /livez`
+
+Validates that the HTTP listener and Go event loop are responsive. Does not perform database I/O.
+
+#### Response (HTTP 200 OK)
+```json
+{
+  "status": "alive"
+}
+```
+
+### 4.2 Readiness Probe
+`GET /readyz`
+
+Verifies database connectivity by executing `db.Ping(ctx)` against configured connection pools.
+
+#### Responses
+- **HTTP 200 OK**: Both Data Pool and Control Pool are connected and ready to process queries.
+  ```json
+  {
+    "status": "ready"
+  }
+  ```
+- **HTTP 503 Service Unavailable**: Database pools are disconnected, restarting, or unreachable.
+  ```json
+  {
+    "type": "https://modulaengine.dev/errors",
+    "title": "Database Unavailable",
+    "status": 503,
+    "detail": "ping data pool: connection refused"
+  }
+  ```
+
+### 4.3 Backward-Compatible Health Probe
+`GET /healthz`
+
+Alias endpoint forwarding to the same check and response logic as `/readyz`.
+
+### 4.4 Version & Build Metadata
+`GET /version`
+
+Returns application version, Git commit hash, and build timestamp embedded via `-ldflags`.
+
+#### Response (HTTP 200 OK)
+```json
+{
+  "version": "v1.0.0-MVP",
+  "commit": "a1b2c3d",
+  "build_time": "2026-11-04T12:00:00Z"
 }
 ```

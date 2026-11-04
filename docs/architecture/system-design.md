@@ -100,6 +100,26 @@ Separates read pipelines and write pipelines while retaining immediate ACID cons
   - Executes atomic CTE to update record and emit audit diff record simultaneously.
   - Dispatches mutation events to the SSE event hub and background job queue.
 
+### 2.4 Query Path Accelerators (Dataloader & CompiledQueryCache)
+
+#### Relation Dataloader (`internal/query/dataloader.go`)
+Resolving nested relations (`?expand=customer,account`) without batching causes severe N+1 latency degradation. ModulaEngine employs a per-request `RelationResolver`:
+1. Collects and deduplicates foreign key identifiers across the current pagination batch (up to 100 records).
+2. Executes a single batched query per related collection:
+   ```sql
+   SELECT <allowed_fields> 
+   FROM usr_customers 
+   WHERE id = ANY($1) AND tenant_id = $2 AND deleted_at IS NULL;
+   ```
+3. Hydrates relation objects into parent records in Go memory before serializing response JSON.
+4. Lifecyle is bound to the request context to guarantee thread isolation across concurrent clients.
+
+#### Compiled Query LRU Cache (`internal/query/cache.go`)
+To eliminate repetitive AST parsing, symbol validation, and predicate rewriting on high-frequency read endpoints, compiled query metadata is stored in an in-memory `CompiledQueryCache`:
+- **Cache Key**: Deterministic SHA-256 hash computed over `tenant_id`, collection name, raw URL query string, and the user's role identifier.
+- **Data Structure**: Mutex-synchronized doubly linked list with hash table indexing (default capacity: 10,000 entries).
+- **Eviction**: Least-Recently-Used (LRU) tail eviction when capacity is reached. Cached entries return deep copies of parameterized SQL and projection descriptors to prevent shared mutation across goroutines.
+
 ---
 
 ## 3. High-Throughput Job Queue (`sys_jobs`)
@@ -137,3 +157,117 @@ WHERE id = (
 | Write Latency (p95) | < 35 ms | Single-roundtrip CTE execution, async audit dispatch |
 | DDL Lock Timeout | 2.0 s | `SET LOCAL lock_timeout = '2s'` on control pool |
 | Request Timeout | 5.0 s | Context deadline cancellation on all HTTP handlers |
+
+---
+
+## 5. Configuration Engine & Credential Hardening (`internal/config`)
+
+ModulaEngine enforces the 12-factor configuration hierarchy:
+$$\text{Defaults} \longrightarrow \text{.env File} \longrightarrow \text{OS Environment Variables} \longrightarrow \text{CLI Runtime Overrides}$$
+
+### 5.1 Process Table Credential Protection (CWE-214)
+Accepting database passwords or encryption secrets via CLI arguments exposes plaintext credentials to unprivileged local users via `ps aux`, `/proc/<PID>/cmdline`, and container inspection APIs.
+- CLI flags `--db`, `--db-control`, and `--jwt-secret` are eliminated.
+- Database connection strings (`DATABASE_URL`, `DATABASE_CONTROL_URL`, `DATABASE_READ_URL`) and cryptographic keys (`JWT_SECRET`) must be provided via `.env` or OS environment variables.
+- CLI flags are strictly restricted to non-sensitive runtime controls: `--env-file`, `--port`, `--headless`, `--log-level`, `--log-file`, `--log-console`, `--version`.
+
+### 5.2 Zero-Dependency `.env` Loader
+`internal/config/env.go` implements an in-engine parser:
+- Parses `KEY=VALUE` pairs with support for `#` comments, whitespace trimming, and quoted strings.
+- Respects existing OS environment variables: variables already set in the operating system environment are never overwritten by `.env` entries.
+
+### 5.3 Production Environment Validation
+When `ENV=production`:
+- `JWT_SECRET` must be at least 32 bytes in length.
+- Default development secrets and placeholder strings containing `change-in-production` cause immediate configuration failure (`ErrWeakSecret`).
+
+---
+
+## 6. Application Lifecycle Container (`internal/app`)
+
+The application lifecycle is decoupled from CLI entrypoints via the `App` container (`internal/app/app.go`), coordinating startup sequencing, runtime supervision, and graceful teardown.
+
+```
+       ┌────────────────────────┐
+       │     app.New(cfg)       │
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │   Pool Retry Connect   │ (Exponential backoff)
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │  sys_* Schema Migrator │ (Control Pool DDL)
+       └───────────┬────────────┘
+                   │
+                   ▼
+       ┌────────────────────────┐
+       │      app.Start()       │ (Queue Workers + TCP Listener)
+       └───────────┬────────────┘
+                   │ (SIGINT / SIGTERM)
+                   ▼
+       ┌────────────────────────┐
+       │      app.Stop(ctx)     │ (HTTP drain -> Workers -> DB pools)
+       └────────────────────────┘
+```
+
+### 6.1 Lifecycle Methods
+- `app.New(ctx, cfg, version, commit, buildTime)`: Initializes database pools with cold-boot retry, runs catalog migrations, constructs AST compilers, builds the Chi HTTP router, and wires background queue workers.
+- `app.Start()`: Starts queue worker pool and lock reaper goroutines, binds the TCP listener, and begins serving HTTP traffic.
+- `app.Stop(ctx)`: Coordinates ordered shutdown:
+  1. Shuts down the HTTP server with bounded context deadline (5s).
+  2. Cancels worker context to stop job dequeue loops.
+  3. Stops the crash reaper daemon.
+  4. Closes PostgreSQL connection pools (`DataPool`, `ControlPool`).
+
+---
+
+## 7. System Catalog Bootstrap Migrator (`internal/database/migrator.go`)
+
+To eliminate manual bootstrapping of system tables, ModulaEngine executes transactional baseline migrations on boot using the Control Pool.
+
+### 7.1 Migration Execution & Versioning
+- `sys_schema_version`: Tracks applied migrations with `version INT PRIMARY KEY`, `description TEXT`, and `applied_at TIMESTAMPTZ`.
+- Migrations execute sequentially within atomic transactions:
+  ```sql
+  BEGIN;
+  SET LOCAL lock_timeout = '2s';
+  SET LOCAL statement_timeout = '5s';
+  -- Execute baseline DDL statements
+  INSERT INTO sys_schema_version (version, description) VALUES ($1, $2);
+  COMMIT;
+  ```
+- **Baseline Tables**: `sys_tenants`, `sys_users`, `sys_roles`, `sys_permissions`, `sys_collections`, `sys_fields`, `sys_jobs`, `sys_audit_logs`.
+
+### 7.2 Cold-Boot Connection Retry
+In container environments where PostgreSQL boots concurrently with the application, immediate connection failure causes crash loops. `NewPoolManagerWithRetry` implements exponential backoff:
+- Default: 5 attempts with 500ms initial backoff and jitter (500ms, 1s, 2s, 4s, 8s).
+- Re-verifies connectivity via `Ping()` before proceeding to schema migration.
+
+---
+
+## 8. Health Probes & Observability Architecture
+
+ModulaEngine exposes distinct probe endpoints configured for container orchestrators (Kubernetes, Nomad, Docker Compose):
+
+```
+                       ┌──────────────┐
+                       │ Orchestrator │
+                       └──────┬───────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          │ GET /livez        │ GET /readyz       │ GET /version
+          ▼                   ▼                   ▼
+┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
+│ Event Loop Alive  │ │ Database Ping OK  │ │ Build Metadata    │
+│ HTTP 200 {"alive"}│ │ HTTP 200 {"ready"}│ │ Commit / Version  │
+└───────────────────┘ └───────────────────┘ └───────────────────┘
+```
+
+### 8.1 Probe Contracts
+- `GET /livez`: Liveness probe. Returns HTTP 200 `{"status":"alive"}` immediately without database I/O. Used by orchestrators to detect process deadlock or event loop failure.
+- `GET /readyz`: Readiness probe. Executes `db.Ping(ctx)` on the database pool. Returns HTTP 200 `{"status":"ready"}` when connected, or HTTP 503 `Service Unavailable` with RFC 7807 problem details if database connectivity is severed. Prevents orchestrators from routing traffic to unready instances.
+- `GET /healthz`: Backward-compatible readiness alias routing to the `/readyz` handler.
+- `GET /version`: Returns runtime version, git commit hash, and build timestamp.

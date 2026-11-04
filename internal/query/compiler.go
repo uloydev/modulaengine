@@ -14,6 +14,35 @@ type CompiledQuery struct {
 	FieldMappings map[string]string
 }
 
+func (q *CompiledQuery) Clone() *CompiledQuery {
+	if q == nil {
+		return nil
+	}
+	var argsCopy []any
+	if q.Args != nil {
+		argsCopy = make([]any, len(q.Args))
+		copy(argsCopy, q.Args)
+	}
+	var colsCopy []string
+	if q.Columns != nil {
+		colsCopy = make([]string, len(q.Columns))
+		copy(colsCopy, q.Columns)
+	}
+	var mappingsCopy map[string]string
+	if q.FieldMappings != nil {
+		mappingsCopy = make(map[string]string, len(q.FieldMappings))
+		for k, v := range q.FieldMappings {
+			mappingsCopy[k] = v
+		}
+	}
+	return &CompiledQuery{
+		SQL:           q.SQL,
+		Args:          argsCopy,
+		Columns:       colsCopy,
+		FieldMappings: mappingsCopy,
+	}
+}
+
 type Compiler struct {
 	registry *Registry
 }

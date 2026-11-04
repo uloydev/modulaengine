@@ -21,15 +21,22 @@ func NewRouter(cfg ServerConfig, db TxDB, dataHandler *DataHandler, hub *SSEHub,
 	r.Use(chimw.Recoverer)
 
 	// Public system endpoints
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/livez", func(w http.ResponseWriter, r *http.Request) {
+		RespondJSON(w, http.StatusOK, map[string]string{"status": "alive"})
+	})
+
+	readyHandler := func(w http.ResponseWriter, r *http.Request) {
 		if db != nil {
 			if err := db.Ping(r.Context()); err != nil {
 				RespondError(w, r, http.StatusServiceUnavailable, "Database Unavailable", err.Error())
 				return
 			}
 		}
-		RespondJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
-	})
+		RespondJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	}
+
+	r.Get("/readyz", readyHandler)
+	r.Get("/healthz", readyHandler)
 
 	r.Get("/version", func(w http.ResponseWriter, r *http.Request) {
 		RespondJSON(w, http.StatusOK, map[string]string{

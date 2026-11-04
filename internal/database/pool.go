@@ -110,6 +110,52 @@ func NewPoolManager(ctx context.Context, cfg Config) (*PoolManager, error) {
 	}, nil
 }
 
+func NewPoolManagerWithRetry(ctx context.Context, cfg Config, maxRetries int, initialBackoff time.Duration) (*PoolManager, error) {
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	if initialBackoff <= 0 {
+		initialBackoff = 500 * time.Millisecond
+	}
+
+	var lastErr error
+	backoff := initialBackoff
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		mgr, err := NewPoolManager(ctx, cfg)
+		if err == nil {
+			pingErr := mgr.Ping(ctx)
+			if pingErr == nil {
+				return mgr, nil
+			}
+			mgr.Close()
+			lastErr = pingErr
+		} else {
+			lastErr = err
+		}
+
+		if attempt < maxRetries {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > 10*time.Second {
+					backoff = 10 * time.Second
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("failed to connect to database pools after %d attempts: %w", maxRetries+1, lastErr)
+}
+
 func (m *PoolManager) Reader() *pgxpool.Pool {
 	if m.ReadPool != nil {
 		return m.ReadPool

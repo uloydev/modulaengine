@@ -3,10 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -32,6 +32,7 @@ type DataHandler struct {
 	cmdCompiler   *command.Compiler
 	executor      *command.Executor
 	hub           *SSEHub
+	queryCache    *query.CompiledQueryCache
 }
 
 func NewDataHandler(
@@ -49,7 +50,21 @@ func NewDataHandler(
 		cmdCompiler:   cmdCompiler,
 		executor:      executor,
 		hub:           hub,
+		queryCache:    query.NewCompiledQueryCache(10000),
 	}
+}
+
+func (h *DataHandler) batchQuery(ctx context.Context, col *core.Collection, ids []any, secCtx *core.SecurityContext) ([]map[string]any, error) {
+	compiled, err := h.queryCompiler.CompileBatchSelect(col, ids, secCtx)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.db.Query(ctx, compiled.SQL, compiled.Args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanRowsToMaps(rows, compiled.Columns)
 }
 
 func (h *DataHandler) HandleList(w http.ResponseWriter, r *http.Request) {
@@ -77,18 +92,23 @@ func (h *DataHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	compiled, err := h.queryCompiler.CompileSelect(col, params, secCtx)
-	if err != nil {
-		if errors.Is(err, query.ErrFieldNotPermitted) {
-			RespondError(w, r, http.StatusForbidden, "Forbidden", err.Error())
+	cacheKey := query.ComputeCacheKey(secCtx.TenantID, col.Name, r.URL.RawQuery, secCtx.RoleName, secCtx.AllowedFields)
+	var compiled *query.CompiledQuery
+	if h.queryCache != nil {
+		if cached, ok := h.queryCache.Get(cacheKey); ok {
+			compiled = cached
+		}
+	}
+	if compiled == nil {
+		var compErr error
+		compiled, compErr = h.queryCompiler.CompileSelect(col, params, secCtx)
+		if compErr != nil {
+			RespondDomainError(w, r, compErr)
 			return
 		}
-		if errors.Is(err, query.ErrUnknownField) {
-			RespondError(w, r, http.StatusBadRequest, "Bad Request", err.Error())
-			return
+		if h.queryCache != nil {
+			h.queryCache.Set(cacheKey, compiled)
 		}
-		RespondError(w, r, http.StatusInternalServerError, "Internal Server Error", err.Error())
-		return
 	}
 
 	rows, err := h.db.Query(r.Context(), compiled.SQL, compiled.Args...)
@@ -102,6 +122,14 @@ func (h *DataHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		RespondError(w, r, http.StatusInternalServerError, "Row Serialization Error", err.Error())
 		return
+	}
+
+	if len(params.Expand) > 0 && len(records) > 0 {
+		resolver := query.NewRelationResolver(h.registry, h.batchQuery)
+		if err := resolver.Resolve(r.Context(), records, params.Expand, col, secCtx); err != nil {
+			RespondError(w, r, http.StatusInternalServerError, "Relation Resolution Error", err.Error())
+			return
+		}
 	}
 
 	response := map[string]any{
@@ -147,9 +175,18 @@ func (h *DataHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	if expandStr := r.URL.Query().Get("expand"); expandStr != "" {
+		for _, e := range strings.Split(expandStr, ",") {
+			e = strings.TrimSpace(e)
+			if e != "" {
+				params.Expand = append(params.Expand, e)
+			}
+		}
+	}
+
 	compiled, err := h.queryCompiler.CompileSelect(col, params, secCtx)
 	if err != nil {
-		RespondError(w, r, http.StatusInternalServerError, "Internal Server Error", err.Error())
+		RespondDomainError(w, r, err)
 		return
 	}
 
@@ -169,6 +206,14 @@ func (h *DataHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 	if len(records) == 0 {
 		RespondError(w, r, http.StatusNotFound, "Not Found", fmt.Sprintf("Record '%s' not found", publicID))
 		return
+	}
+
+	if len(params.Expand) > 0 {
+		resolver := query.NewRelationResolver(h.registry, h.batchQuery)
+		if err := resolver.Resolve(r.Context(), records, params.Expand, col, secCtx); err != nil {
+			RespondError(w, r, http.StatusInternalServerError, "Relation Resolution Error", err.Error())
+			return
+		}
 	}
 
 	RespondJSON(w, http.StatusOK, map[string]any{"data": records[0]})
@@ -209,15 +254,7 @@ func (h *DataHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.executor.ExecuteInsert(r.Context(), tx, col, payload, secCtx)
 	if err != nil {
-		if errors.Is(err, query.ErrFieldNotPermitted) {
-			RespondError(w, r, http.StatusForbidden, "Forbidden", err.Error())
-			return
-		}
-		if errors.Is(err, core.ErrValidation) || errors.Is(err, query.ErrUnknownField) {
-			RespondError(w, r, http.StatusBadRequest, "Validation Error", err.Error())
-			return
-		}
-		RespondError(w, r, http.StatusInternalServerError, "Insert Failed", err.Error())
+		RespondDomainError(w, r, err)
 		return
 	}
 
@@ -297,23 +334,7 @@ func (h *DataHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.executor.ExecuteUpdate(r.Context(), tx, col, publicID, version, payload, secCtx)
 	if err != nil {
-		if errors.Is(err, core.ErrVersionConflict) {
-			RespondError(w, r, http.StatusConflict, "Optimistic Concurrency Conflict", err.Error())
-			return
-		}
-		if errors.Is(err, core.ErrNotFound) {
-			RespondError(w, r, http.StatusNotFound, "Not Found", fmt.Sprintf("Record '%s' not found", publicID))
-			return
-		}
-		if errors.Is(err, query.ErrFieldNotPermitted) {
-			RespondError(w, r, http.StatusForbidden, "Forbidden", err.Error())
-			return
-		}
-		if errors.Is(err, core.ErrValidation) || errors.Is(err, query.ErrUnknownField) {
-			RespondError(w, r, http.StatusBadRequest, "Validation Error", err.Error())
-			return
-		}
-		RespondError(w, r, http.StatusInternalServerError, "Update Failed", err.Error())
+		RespondDomainError(w, r, err)
 		return
 	}
 
@@ -378,15 +399,7 @@ func (h *DataHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.executor.ExecuteSoftDelete(r.Context(), tx, col, publicID, version, secCtx)
 	if err != nil {
-		if errors.Is(err, core.ErrVersionConflict) {
-			RespondError(w, r, http.StatusConflict, "Optimistic Concurrency Conflict", err.Error())
-			return
-		}
-		if errors.Is(err, core.ErrNotFound) {
-			RespondError(w, r, http.StatusNotFound, "Not Found", fmt.Sprintf("Record '%s' not found", publicID))
-			return
-		}
-		RespondError(w, r, http.StatusInternalServerError, "Delete Failed", err.Error())
+		RespondDomainError(w, r, err)
 		return
 	}
 

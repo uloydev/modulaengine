@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -54,6 +55,48 @@ func TestRouter_PublicEndpoints(t *testing.T) {
 
 	db := &mockTxDB{}
 	router := api.NewRouter(cfg, db, nil, nil, nil)
+
+	t.Run("livez endpoint", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+	})
+
+	t.Run("readyz endpoint healthy", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+	})
+
+	t.Run("readyz endpoint unhealthy", func(t *testing.T) {
+		t.Parallel()
+		unhealthyDB := &mockTxDB{
+			pingFunc: func(ctx context.Context) error {
+				return errors.New("connection refused")
+			},
+		}
+		unhealthyRouter := api.NewRouter(cfg, unhealthyDB, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		rec := httptest.NewRecorder()
+
+		unhealthyRouter.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+		}
+	})
 
 	t.Run("healthz endpoint", func(t *testing.T) {
 		t.Parallel()

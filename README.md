@@ -86,13 +86,28 @@ git clone https://github.com/uloydev/modulaengine.git
 cd modulaengine
 ```
 
-### 2. Configure Environment
+### 2. Configure Environment (12-Factor Hierarchy)
+ModulaEngine enforces the 12-factor configuration precedence:
+$$\text{Defaults} \longrightarrow \text{.env File} \longrightarrow \text{OS Environment Variables} \longrightarrow \text{CLI Runtime Overrides}$$
+
+To prevent process table credential leakage (CWE-214 via `ps aux` or `/proc/<PID>/cmdline`), database passwords and cryptographic secrets must never be supplied through command-line flags. All sensitive credentials are configured strictly via `.env` or OS environment variables.
+
+Copy and configure environment variables:
 ```bash
 cp .env.example .env
 ```
-Edit `.env` to configure your PostgreSQL connection pools:
-- `DATABASE_URL`: Data pool user (`modula_runtime`, DML only)
-- `DATABASE_CONTROL_URL`: Control pool user (`modula_control`, DDL & migrations)
+
+Key environment variables:
+- `PORT`: HTTP server listen port (default: `8080`).
+- `ENV`: Environment mode (`development`, `production`). Production requires a JWT secret of at least 32 bytes and rejects development defaults.
+- `DATABASE_URL`: Runtime DML pool connection string (user `modula_runtime`, DML only, required).
+- `DATABASE_CONTROL_URL`: Control pool connection string (user `modula_control`, DDL and migrations, required).
+- `DATABASE_READ_URL`: Optional read-replica connection string.
+- `JWT_SECRET`: Secret key for JWT authentication (minimum 32 bytes in production).
+- `LOG_LEVEL`: Log severity level (`debug`, `info`, `warn`, `error`, default: `info`).
+- `LOG_FILE`: File path for lumberjack log rotation (optional).
+- `LOG_CONSOLE`: Human-readable console log output toggle (default: `false`).
+- `HEADLESS`: Disable embedded Svelte 5 admin SPA (default: `false`).
 
 ### 3. Build & Run
 ```bash
@@ -105,6 +120,39 @@ make verify
 # Start development server
 make run
 ```
+
+### 4. Command-Line Interface (CLI) Flags
+Non-sensitive runtime settings can be overridden using allowed CLI flags:
+- `--env-file <path>`: Custom environment file path (default: `.env`).
+- `--port <port>`: HTTP server listening port override.
+- `--headless`: Run in headless mode without serving embedded UI assets.
+- `--log-level <level>`: Override log severity (`debug`, `info`, `warn`, `error`).
+- `--log-file <path>`: Specify destination log file path for rotation.
+- `--log-console`: Enable console log format.
+- `--version`: Print version, commit, and build time metadata, then exit.
+
+---
+
+## Health & Operational Probes
+
+ModulaEngine exposes distinct probes for container orchestrators (Kubernetes, Nomad, Docker Compose):
+
+| Endpoint | Method | Scope | Behavior |
+|---|---|---|---|
+| `/livez` | `GET` | Liveness | Returns `200 {"status":"alive"}` immediately. Verifies HTTP event loop responsiveness. |
+| `/readyz` | `GET` | Readiness | Pings database connection pools (`DataPool` and `ControlPool`). Returns `200 {"status":"ready"}` if healthy, or `503 Service Unavailable` with RFC 7807 problem details if database is unreachable. |
+| `/healthz` | `GET` | Readiness | Backward-compatible alias routing to `/readyz`. |
+| `/version` | `GET` | Metadata | Returns `200` with version, git commit, and build timestamp. |
+
+---
+
+## Query Engine Optimizations
+
+### Relation Dataloader (`?expand=...`)
+Query relation expansions (`GET /api/data/orders?expand=customer,account`) eliminate N+1 queries. The Dataloader collects foreign key IDs across the pagination batch and executes a single batched query per related collection using `WHERE id = ANY($1) AND tenant_id = $2 AND deleted_at IS NULL`, hydrating relations directly into the response payload.
+
+### Compiled Query Cache
+An in-memory thread-safe LRU cache (`capacity=10000`) caches parameterized SQL statements and projection schemas keyed by `SHA256(tenant_id + collection + query + role)`. High-frequency reads bypass repetitive AST parsing, tokenization, and identifier validation.
 
 ---
 
